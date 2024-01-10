@@ -1,5 +1,5 @@
 from collections import OrderedDict
-import yaml
+from ruamel.yaml import YAML
 import argparse
 import os
 
@@ -27,45 +27,48 @@ SERVICE_ORDER = [
     'sysctls', 'userns_mode',
     'autodestroy', 'autoredeploy',
     'deployment_strategy', 'sequential_deployment', 'tags', 'target_num_containers',
-    'roles',
-]
+    'roles']
 
 
-def sort_yaml_file(input_file_path, output_file_path):
+def sort_yaml_file(file_path, result_file_path):
+    yaml = YAML(typ='rt')  # Use RoundTrip
+    yaml.indent(mapping=2, sequence=4, offset=2)
+    yaml.preserve_quotes = True
+
     # Load the YAML file into a Python dictionary
-    with open(input_file_path, 'r') as file:
-        data = yaml.safe_load(file)
+    with open(file_path, 'r') as file:
+        lines = file.readlines()
+        lines = [line for line in lines if line.strip()]
+        data = yaml.load(''.join(lines))
 
     # Create a new OrderedDict where the keys are sorted according to TOPLEVEL_ORDER
-    sorted_data = OrderedDict((key, data[key]) for key in TOPLEVEL_ORDER if key in data)
-    remaining_keys = set(data.keys()) - set(TOPLEVEL_ORDER)
-    sorted_data.update((key, data[key]) for key in remaining_keys)
+    # Check if data is a dictionary
+    if isinstance(data, dict):
+        # Create a new OrderedDict where the keys are sorted according to TOPLEVEL_ORDER
+        sorted_data = OrderedDict((key, data[key]) for key in TOPLEVEL_ORDER if key in data)
+        remaining_keys = set(data.keys()) - set(TOPLEVEL_ORDER)
+        sorted_data.update((key, data[key]) for key in remaining_keys)
+        # If 'services' is one of the keys, sort its sub-keys according to SERVICE_ORDER
+        if 'services' in sorted_data:
+            for service_name, service_data in sorted_data['services'].items():
+                sorted_service_data = OrderedDict(
+                    (key, service_data[key]) for key in SERVICE_ORDER if key in service_data)
+                remaining_keys = set(service_data.keys()) - set(SERVICE_ORDER)
+                sorted_service_data.update((key, service_data[key]) for key in remaining_keys)
 
-    # If 'services' is one of the keys, sort its sub-keys according to SERVICE_ORDER
-    if 'services' in sorted_data:
-        for service_name, service_data in sorted_data['services'].items():
-            sorted_service_data = OrderedDict((key, service_data[key]) for key in SERVICE_ORDER if key in service_data)
-            remaining_keys = set(service_data.keys()) - set(SERVICE_ORDER)
-            sorted_service_data.update((key, service_data[key]) for key in remaining_keys)
+                # Sort the elements under 'depends_on', 'environment', 'labels', 'ports', 'volumes' alphabetically
+                for key in ['depends_on', 'ports', 'volumes']:
+                    if key in sorted_service_data and isinstance(sorted_service_data[key], list):
+                        sorted_service_data[key] = sorted(sorted_service_data[key])
 
-            # Sort the elements under 'depends_on', 'environment', 'labels', 'ports', 'volumes' alphabetically
-            for key in ['depends_on', 'environment', 'labels', 'ports', 'volumes']:
-                if key in sorted_service_data and isinstance(sorted_service_data[key], list):
-                    sorted_service_data[key] = sorted(sorted_service_data[key])
-
-            sorted_data['services'][service_name] = dict(sorted_service_data)  # Convert to regular dict
-
-    # Dump the sorted dictionary to a YAML string
-    yaml_string = yaml.safe_dump(dict(sorted_data), sort_keys=False)  # Convert to regular dict
-
-    # Add a new line after every service in 'services'
-    if 'services' in sorted_data:
-        for service_name in sorted_data['services']:
-            yaml_string = yaml_string.replace(f'{service_name}: {{', f'{service_name}: {{\n')
-
-    # Write the modified YAML string back to the new YAML file
-    with open(output_file_path, 'w') as file:
-        file.write(yaml_string)
+                sorted_data['services'][service_name] = dict(sorted_service_data)  # Convert to regular dict
+        # Write the modified YAML string back to the new YAML file
+        with open(result_file_path, 'w') as file:
+            for key, value in dict(sorted_data).items():
+                yaml.dump({key: value}, file)
+                file.write('\n')  # Add a newline after each top-level element
+    else:
+        print("The YAML file does not contain a dictionary at the top level.")
 
 
 if __name__ == '__main__':
@@ -78,18 +81,20 @@ if __name__ == '__main__':
     if args.output is None:
         args.output = args.input
 
+    nameSuffix = ''
     if args.name is not None:
-        args.output = args.output + args.name
+        nameSuffix = args.name
 
     files_changed = 0
 
     if os.path.isdir(args.input):
         for dirpath, dirnames, filenames in os.walk(args.input):
             for filename in filenames:
-                if filename.endswith('.yml') or filename.endswith('.yaml'):
+                if filename.startswith('docker-compose') and (filename.endswith('.yml') or filename.endswith('.yaml')):
                     input_file_path = os.path.join(dirpath, filename)
-                    output_file_path = os.path.join(dirpath, filename + args.name)
+                    output_file_path = os.path.join(dirpath, filename + nameSuffix)
                     sort_yaml_file(input_file_path, output_file_path)
+                    print(f"{input_file_path} changed.")
                     files_changed += 1
     elif os.path.isfile(args.input):
         sort_yaml_file(args.input, args.output)
