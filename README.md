@@ -1,2 +1,2 @@
 # compose_sorter
-sort docker-compose.yml files
+sort content of docker-compose.yml files
